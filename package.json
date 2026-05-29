@@ -1,0 +1,6 @@
+{
+  "name": "ecosnuggle-giftbox-backend",
+  "version": "1.0.0",
+  "description": "Vercel backend for EcoSnuggle gift box draft orders",
+  "private": true
+}
