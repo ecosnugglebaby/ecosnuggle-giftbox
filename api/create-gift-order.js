@@ -1,23 +1,14 @@
 export default async function handler(req, res) {
 
-  // Allow CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { items, giftMessage } = req.body;
-
-  if (!items || items.length === 0) {
-    return res.status(400).json({ error: 'No items provided' });
-  }
+  if (!items || items.length === 0) return res.status(400).json({ error: 'No items provided' });
 
   const SHOPIFY_STORE = process.env.SHOPIFY_STORE_DOMAIN;
   const SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
@@ -26,41 +17,49 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Missing environment variables' });
   }
 
-  // Build line items
-  const lineItems = items.map(function(item) {
-    return {
-      variant_id: parseInt(item.variantId),
-      quantity: item.quantity || 1,
-      properties: [
-        { name: '_gift_box_item', value: 'true' }
-      ]
-    };
+  // Calculate total price in dollars
+  const totalCents = items.reduce((sum, item) => sum + (item.price * (item.quantity || 1)), 0);
+  const totalDollars = (totalCents / 100).toFixed(2);
+
+  // Build item list for the note
+  let itemsSummary = '';
+  items.forEach((item, index) => {
+    const itemPrice = ((item.price / 100) * (item.quantity || 1)).toFixed(2);
+    itemsSummary += `Item ${index + 1}: ${item.title} × ${item.quantity || 1} ($${itemPrice})\n`;
   });
 
-  // Build order note
-  let note = '🎁 Gift Box Order\n';
-  items.forEach(function(item, index) {
-    note += 'Item ' + (index + 1) + ': ' + item.title + '\n';
-  });
+  // Build note
+  let note = `🎁 Gift Box Order\n\n${itemsSummary}\nBox Total: $${totalDollars}`;
   if (giftMessage) {
-    note += '\n💌 Gift Message:\n' + giftMessage;
+    note += `\n\n💌 Gift Message:\n${giftMessage}`;
   }
+
+  // ONE line item — the gift box itself — with custom price = total of all products
+  // Each product is listed as a property, not a separate line item
+  const lineItems = [
+    {
+      title: '🎁 Build My Gift Box',
+      price: totalDollars,   // ← sets the real total price
+      quantity: 1,
+      properties: items.map((item, index) => ({
+        name: `Item ${index + 1}`,
+        value: `${item.title} × ${item.quantity || 1}`
+      })).concat(
+        giftMessage ? [{ name: '💌 Gift Message', value: giftMessage }] : []
+      )
+    }
+  ];
 
   const draftOrderPayload = {
     draft_order: {
       line_items: lineItems,
       note: note,
-      tags: 'gift-box',
-      use_customer_default_address: true
+      tags: 'gift-box'
     }
   };
 
   try {
-    const shopifyUrl = 'https://' + SHOPIFY_STORE + '/admin/api/2024-01/draft_orders.json';
-
-    console.log('Store:', SHOPIFY_STORE);
-    console.log('Token starts with:', SHOPIFY_TOKEN ? SHOPIFY_TOKEN.substring(0, 10) : 'MISSING');
-    console.log('Payload:', JSON.stringify(draftOrderPayload));
+    const shopifyUrl = `https://${SHOPIFY_STORE}/admin/api/2024-01/draft_orders.json`;
 
     const response = await fetch(shopifyUrl, {
       method: 'POST',
@@ -71,11 +70,7 @@ export default async function handler(req, res) {
       body: JSON.stringify(draftOrderPayload)
     });
 
-    // Read as text first to avoid JSON parse errors
     const rawText = await response.text();
-    console.log('Shopify status:', response.status);
-    console.log('Shopify response:', rawText.substring(0, 500));
-
     let data;
     try {
       data = JSON.parse(rawText);
@@ -95,11 +90,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const checkoutUrl = data.draft_order.invoice_url;
-    return res.status(200).json({ checkoutUrl: checkoutUrl });
+    return res.status(200).json({ checkoutUrl: data.draft_order.invoice_url });
 
   } catch (err) {
-    console.error('Server error:', err);
     return res.status(500).json({ error: 'Server error', message: err.message });
   }
 }
